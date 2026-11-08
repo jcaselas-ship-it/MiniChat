@@ -1,4 +1,4 @@
-const CACHE = 'minichat-v2';
+const CACHE = 'minichat-v3';
 const FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
   'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js'];
 self.addEventListener('install', e => {
@@ -6,7 +6,7 @@ self.addEventListener('install', e => {
   self.skipWaiting();
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))));
+  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && k.startsWith('minichat-')).map(k => caches.delete(k)))));
   self.clients.claim();
 });
 // Red primero (para recibir siempre la última versión); caché si no hay conexión

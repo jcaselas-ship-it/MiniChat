@@ -44,6 +44,12 @@ button.sec{background:var(--panel);border-color:var(--borde);color:var(--fg)}
 #pie{display:flex;gap:6px;padding:8px;border-top:1px solid var(--borde)}
 #txt{flex:1;font-size:var(--fs,15px)}
 #aviso{display:none;margin:auto;color:var(--muted)}
+#pie .ic{padding:9px 10px;background:var(--panel);border-color:var(--borde);color:var(--fg);touch-action:none;user-select:none;-webkit-user-select:none}
+#mic.rec{background:#d64545;border-color:#d64545;color:#fff}
+.m img{display:block;max-width:220px;max-height:220px;border-radius:8px;margin-top:4px;cursor:zoom-in}
+.m audio{display:block;width:230px;max-width:100%;margin-top:4px}
+.m a.arch{display:inline-block;margin-top:4px;padding:6px 10px;border-radius:8px;background:#0003;color:inherit;text-decoration:none}
+.m .prog{font-size:.8em;opacity:.8}
 </style>
 </head>
 <body>
@@ -70,7 +76,10 @@ button.sec{background:var(--panel);border-color:var(--borde);color:var(--fg)}
     </div>
     <div id="msgs"></div>
     <div id="pie">
+      <button id="clip" class="ic" title="Enviar foto, PDF o audio (máx. 10 MB)">📎</button>
+      <input id="file" type="file" accept="image/*,application/pdf,audio/*" hidden>
       <input id="txt" placeholder="Escribe y pulsa Enter" autocomplete="off">
+      <button id="mic" class="ic" title="Mantén pulsado para grabar una nota de voz">🎤</button>
       <button id="enviar">➤</button>
     </div>
   </div>
@@ -190,6 +199,7 @@ function recibir(c, d) {
     return;
   }
   if (!e.ok) return;
+  if (d.t === 'f0' || d.t === 'fc' || d.t === 'f1') { recibirArchivo(c, e, d); return; }
   if (d.t === 'msg') {
     anadir({ from: e.nick, color: colorValido(d.color) || e.color, text: String(d.text || '').slice(0, 2000), ts: Date.now() }, true);
     avisar();
@@ -215,7 +225,7 @@ function actualizar() {
 
 function hora(ts) { return new Date(ts).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }); }
 
-function pintar(m) {
+function pintar(m, extra) {
   const d = document.createElement('div');
   d.className = 'm' + (m.yo ? ' yo' : '');
   const b = document.createElement('b');
@@ -227,12 +237,14 @@ function pintar(m) {
   i.textContent = hora(m.ts);
   b.append(i);
   d.append(b, document.createTextNode(m.text));
+  if (extra) d.append(extra);
   el.msgs.append(d);
   el.msgs.scrollTop = el.msgs.scrollHeight;
+  return d;
 }
 
 function anadir(m, guardar) {
-  pintar(m);
+  if (guardar !== 'solo') pintar(m);
   if (!guardar) return;
   try {
     const h = JSON.parse(localStorage.getItem(histKey) || '[]');
@@ -295,12 +307,162 @@ async function flotar() {
   });
 }
 
+
+// ---------- Archivos y notas de voz (directos entre amigos, sin servidor) ----------
+const MAX_FILE = 10 * 1024 * 1024, CHUNK = 64 * 1024;
+const tipoOK = m => /^image\/(jpeg|png|gif|webp)$/.test(m) || m === 'application/pdf' || /^audio\//.test(m);
+const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const recibiendo = new Map();   // peer|id -> {name, mime, size, parts, got, d}
+
+function etiqueta(name, mime) {
+  if (/^image\//.test(mime)) return '📷 ' + name;
+  if (/^audio\//.test(mime)) return (name.startsWith('nota-de-voz') ? '🎤 Nota de voz' : '🎵 ' + name);
+  return '📄 ' + name;
+}
+// Contenido que se ve dentro del mensaje: foto, reproductor o botón de descarga
+function vistaArchivo(blob, name, mime) {
+  const url = URL.createObjectURL(blob);
+  if (/^image\//.test(mime)) {
+    const img = document.createElement('img'); img.src = url; img.alt = name;
+    img.onclick = () => window.open(url, '_blank');
+    img.onload = () => { el.msgs.scrollTop = el.msgs.scrollHeight; };
+    return img;
+  }
+  if (/^audio\//.test(mime)) { const a = document.createElement('audio'); a.controls = true; a.src = url; return a; }
+  const a = document.createElement('a'); a.className = 'arch'; a.href = url; a.download = name;
+  a.textContent = '⬇ Descargar (' + kb(blob.size) + ')';
+  return a;
+}
+// Reducir fotos grandes antes de enviarlas (máx. 1600 px, JPEG)
+async function reducir(file) {
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type)) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    if (k === 1 && file.size < 1.5 * 1048576) return file;
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+    const b = await new Promise(r => cv.toBlob(r, 'image/jpeg', .85));
+    if (!b || b.size >= file.size) return file;
+    return new File([b], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch (_) { return file; }
+}
+const espera = ms => new Promise(r => setTimeout(r, ms));
+async function enviarArchivo(file) {
+  if (!file) return;
+  const mime = file.type || '';
+  if (!tipoOK(mime)) { sistema('Solo se pueden enviar fotos, PDF y audio.'); return; }
+  file = await reducir(file);
+  if (file.size > MAX_FILE) { sistema('El archivo pasa de 10 MB (' + kb(file.size) + ').'); return; }
+  const dest = [...conns.values()].filter(e => e.ok && e.conn.open);
+  const name = String(file.name || 'archivo').slice(0, 80), type = file.type;
+  const lbl = etiqueta(name, type);
+  const prog = document.createElement('div'); prog.className = 'prog';
+  const d = pintar({ from: nick, text: lbl, ts: Date.now(), yo: true, color: ajustes.color }, prog);
+  anadir({ from: nick, text: lbl, ts: Date.now(), yo: true, color: ajustes.color }, 'solo');
+  if (!dest.length) { prog.textContent = 'No hay nadie conectado: no se ha entregado'; d.append(vistaArchivo(file, name, type)); return; }
+  const buf = await file.arrayBuffer(), id = Math.random().toString(36).slice(2, 10), total = Math.ceil(buf.byteLength / CHUNK) || 1;
+  for (const e of dest) e.conn.send({ t: 'f0', id, name, mime: type, size: buf.byteLength, color: ajustes.color });
+  for (let k = 0; k < total; k++) {
+    const part = buf.slice(k * CHUNK, (k + 1) * CHUNK);
+    for (const e of dest) {
+      if (!e.conn.open) continue;
+      e.conn.send({ t: 'fc', id, k, data: part });
+      const dc = e.conn.dataChannel;
+      while (dc && dc.bufferedAmount > 1048576 && e.conn.open) await espera(30);   // no saturar la conexión
+    }
+    prog.textContent = 'Enviando… ' + Math.round((k + 1) / total * 100) + ' %';
+  }
+  for (const e of dest) if (e.conn.open) e.conn.send({ t: 'f1', id });
+  prog.remove();
+  d.append(vistaArchivo(file, name, type));
+  el.msgs.scrollTop = el.msgs.scrollHeight;
+}
+function recibirArchivo(c, e, d) {
+  const key = c.peer + '|' + String(d.id || '');
+  if (d.t === 'f0') {
+    const mime = String(d.mime || ''), size = +d.size || 0;
+    if (!tipoOK(mime) || size <= 0 || size > MAX_FILE) return;   // se ignora lo que no esté permitido
+    const name = String(d.name || 'archivo').slice(0, 80).replace(/[\\/]/g, '_');
+    const prog = document.createElement('div'); prog.className = 'prog'; prog.textContent = 'Recibiendo… 0 %';
+    const lbl = etiqueta(name, mime);
+    const box = pintar({ from: e.nick, color: colorValido(d.color) || e.color, text: lbl, ts: Date.now() }, prog);
+    anadir({ from: e.nick, color: colorValido(d.color) || e.color, text: lbl, ts: Date.now() }, 'solo');
+    recibiendo.set(key, { name, mime, size, parts: [], got: 0, box, prog });
+    avisar();
+    return;
+  }
+  const r = recibiendo.get(key); if (!r) return;
+  if (d.t === 'fc') {
+    const data = d.data;
+    if (!(data instanceof ArrayBuffer) || !Number.isInteger(d.k)) return;
+    r.parts[d.k] = data; r.got += data.byteLength;
+    if (r.got > r.size) { recibiendo.delete(key); r.prog.textContent = 'Archivo no válido'; return; }
+    r.prog.textContent = 'Recibiendo… ' + Math.round(r.got / r.size * 100) + ' %';
+    return;
+  }
+  // f1: completo
+  recibiendo.delete(key);
+  if (r.got !== r.size) { r.prog.textContent = 'No ha llegado completo'; return; }
+  const blob = new Blob(r.parts, { type: r.mime });
+  r.prog.remove(); r.box.append(vistaArchivo(blob, r.name, r.mime));
+  el.msgs.scrollTop = el.msgs.scrollHeight;
+}
+
+// Nota de voz: mantener pulsado 🎤, soltar para enviar (máx. 60 s)
+let rec = null;
+async function micDown(ev) {
+  ev.preventDefault();
+  if (rec) return;
+  if (!navigator.mediaDevices || !window.MediaRecorder) { sistema('Este navegador no permite grabar notas de voz.'); return; }
+  rec = { parts: [], t0: Date.now(), soltado: false };
+  const yo = rec;
+  try {
+    const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (yo.soltado || rec !== yo) { st.getTracks().forEach(t => t.stop()); rec = null; return; }
+    const mt = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', ''].find(m => !m || MediaRecorder.isTypeSupported(m));
+    const mr = new MediaRecorder(st, mt ? { mimeType: mt } : undefined);
+    yo.mr = mr; yo.st = st;
+    mr.ondataavailable = e => { if (e.data.size) yo.parts.push(e.data); };
+    mr.onstop = () => {
+      st.getTracks().forEach(t => t.stop());
+      clearInterval(yo.tick); el.mic.classList.remove('rec'); el.mic.textContent = '🎤';
+      if (rec === yo) rec = null;
+      const dur = Date.now() - yo.t0;
+      if (dur < 600 || !yo.parts.length) { sistema('Mantén pulsado 🎤 mientras hablas.'); return; }
+      const type = (mr.mimeType || 'audio/webm').split(';')[0];
+      const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+      enviarArchivo(new File(yo.parts, 'nota-de-voz-' + Math.round(dur / 1000) + 's.' + ext, { type }));
+    };
+    mr.start(250);
+    el.mic.classList.add('rec');
+    yo.tick = setInterval(() => {
+      const s = Math.floor((Date.now() - yo.t0) / 1000);
+      el.mic.textContent = '⏺ ' + s + 's';
+      if (s >= 60) micUp();
+    }, 250);
+  } catch (_) { rec = null; sistema('No hay permiso para usar el micrófono.'); }
+}
+function micUp() {
+  if (!rec) return;
+  rec.soltado = true;
+  if (rec.mr && rec.mr.state !== 'inactive') rec.mr.stop();
+}
+
 // ---------- Eventos ----------
 el.entrar.onclick = entrar;
 el.frase.addEventListener('keydown', e => { if (e.key === 'Enter') entrar(); });
 el.enviar.onclick = enviar;
 el.txt.addEventListener('keydown', e => { if (e.key === 'Enter') enviar(); });
 el.flotar.onclick = flotar;
+const fileIn = $('file'), micBtn = $('mic');
+el.mic = micBtn;
+$('clip').onclick = () => fileIn.click();
+fileIn.onchange = () => { const f = fileIn.files[0]; fileIn.value = ''; enviarArchivo(f); };
+micBtn.addEventListener('pointerdown', micDown);
+['pointerup', 'pointercancel', 'pointerleave'].forEach(t => micBtn.addEventListener(t, micUp));
+micBtn.addEventListener('contextmenu', e => e.preventDefault());
 el.salir.onclick = salir;
 window.addEventListener('beforeunload', () => { if (peer) peer.destroy(); });
 
