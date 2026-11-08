@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MiniChat</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style id="estilos">
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:system-ui,Segoe UI,sans-serif;background:#15171c;color:#e8e8e8}
+#app{display:flex;flex-direction:column;height:100vh;max-width:640px;margin:0 auto}
+.pip #app{max-width:none}
+#setup{margin:auto;padding:20px;display:flex;flex-direction:column;gap:10px;width:min(340px,90%)}
+#setup h1{margin:0 0 6px;font-size:20px;text-align:center}
+input,button{font:inherit;border-radius:8px;border:1px solid #3a3f4b;padding:9px 11px;background:#22252d;color:#eee}
+button{cursor:pointer;background:#2f6fde;border-color:#2f6fde}
+button.sec{background:#2a2e37;border-color:#3a3f4b}
+.nota{font-size:12px;color:#9aa}
+#chat{display:none;flex-direction:column;height:100%}
+#cab{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #2a2e37}
+#estado{flex:1;font-size:12px;color:#9ab;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cab button{padding:4px 9px;font-size:12px}
+#msgs{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:5px}
+.m{max-width:85%;padding:6px 9px;border-radius:10px;background:#272b34;word-wrap:break-word;white-space:pre-wrap}
+.m.yo{align-self:flex-end;background:#2f5fb8}
+.m b{font-size:11px;color:#8fc1ff;display:block}
+.m.yo b{color:#cfe0ff}
+.m i{font-size:10px;color:#aab;font-style:normal;margin-left:6px}
+.sis{align-self:center;font-size:11px;color:#889}
+#pie{display:flex;gap:6px;padding:8px;border-top:1px solid #2a2e37}
+#txt{flex:1}
+#aviso{display:none;margin:auto;color:#9ab}
+</style>
+</head>
+<body>
+<div id="aviso">El chat está en la ventana flotante.</div>
+<div id="app">
+  <div id="setup">
+    <h1>MiniChat</h1>
+    <input id="nick" placeholder="Tu nombre" maxlength="20">
+    <input id="frase" placeholder="Frase secreta de la sala" type="password">
+    <button id="entrar">Entrar</button>
+    <div class="nota" id="nota">Todos deben usar la misma frase. Máx 6 personas.</div>
+  </div>
+  <div id="chat">
+    <div id="cab">
+      <span id="estado">Conectando…</span>
+      <button id="flotar" class="sec">Flotar</button>
+      <button id="salir" class="sec">Salir</button>
+    </div>
+    <div id="msgs"></div>
+    <div id="pie">
+      <input id="txt" placeholder="Escribe y pulsa Enter" autocomplete="off">
+      <button id="enviar">➤</button>
+    </div>
+  </div>
+</div>
+<script>
+const MAX = 6;
+const $ = id => document.getElementById(id);
+const el = {};
+['app','setup','chat','nick','frase','entrar','nota','estado','flotar','salir','msgs','txt','enviar','aviso','estilos'].forEach(k => el[k] = $(k));
+
+let peer = null, mySlot = 0, base = '', authTok = '', nick = '', histKey = '', scan = null;
+let pipWin = null, unread = 0, audio = null;
+const conns = new Map();       // peerId -> {conn, nick, ok}
+const anunciados = new Set();  // peers ya anunciados como conectados
+
+async function sha(s) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+// ---------- Entrar / salir ----------
+async function entrar() {
+  nick = el.nick.value.trim();
+  const frase = el.frase.value.trim();
+  if (!nick || frase.length < 6) { el.nota.textContent = 'Pon un nombre y una frase de al menos 6 caracteres.'; return; }
+  localStorage.setItem('ca_nick', nick);
+  localStorage.setItem('ca_frase', frase);
+  const h = await sha('chatamigos|' + frase);
+  base = 'ca-' + h.slice(0, 24);
+  authTok = (await sha('auth|' + frase)).slice(0, 32);
+  histKey = 'ca_hist_' + h.slice(0, 12);
+  el.setup.style.display = 'none';
+  el.chat.style.display = 'flex';
+  cargarHistorial();
+  reclamarSlot(1);
+  el.txt.focus();
+}
+
+function salir() {
+  clearInterval(scan);
+  if (peer) peer.destroy();
+  peer = null; conns.clear(); anunciados.clear();
+  localStorage.removeItem('ca_frase');
+  el.frase.value = '';
+  el.msgs.innerHTML = '';
+  if (pipWin) pipWin.close();
+  el.chat.style.display = 'none';
+  el.setup.style.display = 'flex';
+}
+
+// ---------- Conexión ----------
+function reclamarSlot(k) {
+  if (k > MAX) { estado('Sala llena (máximo ' + MAX + ')'); return; }
+  const p = new Peer(base + '-' + k);
+  p.on('open', () => {
+    peer = p; mySlot = k;
+    actualizar();
+    conectarTodos();
+    clearInterval(scan);
+    scan = setInterval(conectarTodos, 20000);
+  });
+  p.on('error', e => {
+    if (e.type === 'unavailable-id') { p.destroy(); reclamarSlot(k + 1); return; }
+    if (e.type === 'peer-unavailable') return; // ese hueco está vacío: normal
+    estado('Error: ' + e.type);
+  });
+  p.on('connection', c => prepararConn(c, c.peer));
+  p.on('disconnected', () => { if (!p.destroyed) p.reconnect(); });
+}
+
+function conectarTodos() {
+  if (!peer || peer.destroyed) return;
+  for (let j = 1; j <= MAX; j++) {
+    if (j === mySlot) continue;
+    const id = base + '-' + j;
+    if (conns.has(id)) continue;
+    prepararConn(peer.connect(id, { reliable: true }), peer.id);
+  }
+}
+
+function prepararConn(c, iniciador) {
+  const r = c.peer;
+  c._ini = iniciador;
+  const prev = conns.get(r);
+  if (prev) {
+    // Conexión duplicada: ambos lados conservan la que inició el ID menor
+    if (c._ini < prev.conn._ini) prev.conn.close();
+    else { c.close(); return; }
+  }
+  conns.set(r, { conn: c, nick: '?', ok: false });
+  setTimeout(() => {
+    if (!c.open) { c.close(); if (conns.get(r)?.conn === c) conns.delete(r); }
+  }, 10000);
+  c.on('open', () => c.send({ t: 'hola', auth: authTok, nick }));
+  c.on('data', d => recibir(c, d));
+  c.on('close', () => {
+    const e = conns.get(r);
+    if (e && e.conn === c) {
+      conns.delete(r);
+      if (anunciados.delete(r)) sistema(e.nick + ' se ha desconectado');
+      actualizar();
+    }
+  });
+  c.on('error', () => {});
+}
+
+function recibir(c, d) {
+  const e = conns.get(c.peer);
+  if (!e || e.conn !== c || !d || typeof d !== 'object') return;
+  if (d.t === 'hola') {
+    if (d.auth !== authTok) { c.close(); return; }   // no conoce la frase
+    e.ok = true;
+    e.nick = String(d.nick || '?').slice(0, 20);
+    if (!anunciados.has(c.peer)) { anunciados.add(c.peer); sistema(e.nick + ' se ha conectado'); }
+    actualizar();
+    return;
+  }
+  if (!e.ok) return;
+  if (d.t === 'msg') {
+    anadir({ from: e.nick, text: String(d.text || '').slice(0, 2000), ts: Date.now() }, true);
+    avisar();
+  }
+}
+
+function enviar() {
+  const t = el.txt.value.trim();
+  if (!t) return;
+  let n = 0;
+  for (const e of conns.values()) if (e.ok && e.conn.open) { e.conn.send({ t: 'msg', text: t }); n++; }
+  anadir({ from: nick, text: t, ts: Date.now(), yo: true }, true);
+  el.txt.value = '';
+  if (!n) sistema('No hay nadie conectado: el mensaje no se ha entregado');
+}
+
+// ---------- Interfaz ----------
+function estado(s) { el.estado.textContent = s; }
+function actualizar() {
+  const nombres = [...conns.values()].filter(e => e.ok).map(e => e.nick);
+  estado(nombres.length ? '🟢 ' + nombres.join(', ') : '⚪ Esperando a tus amigos…');
+}
+
+function hora(ts) { return new Date(ts).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }); }
+
+function pintar(m) {
+  const d = document.createElement('div');
+  d.className = 'm' + (m.yo ? ' yo' : '');
+  const b = document.createElement('b');
+  b.textContent = m.yo ? 'Tú' : m.from;
+  const i = document.createElement('i');
+  i.textContent = hora(m.ts);
+  b.append(i);
+  d.append(b, document.createTextNode(m.text));
+  el.msgs.append(d);
+  el.msgs.scrollTop = el.msgs.scrollHeight;
+}
+
+function anadir(m, guardar) {
+  pintar(m);
+  if (!guardar) return;
+  try {
+    const h = JSON.parse(localStorage.getItem(histKey) || '[]');
+    h.push(m);
+    localStorage.setItem(histKey, JSON.stringify(h.slice(-300)));
+  } catch (_) {}
+}
+
+function cargarHistorial() {
+  el.msgs.innerHTML = '';
+  try { JSON.parse(localStorage.getItem(histKey) || '[]').forEach(pintar); } catch (_) {}
+}
+
+function sistema(s) {
+  const d = document.createElement('div');
+  d.className = 'sis';
+  d.textContent = s;
+  el.msgs.append(d);
+  el.msgs.scrollTop = el.msgs.scrollHeight;
+}
+
+function avisar() {
+  const enfocado = document.hasFocus() || (pipWin && pipWin.document.hasFocus());
+  if (enfocado) return;
+  unread++;
+  document.title = '(' + unread + ') MiniChat';
+  try {
+    audio = audio || new AudioContext();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = 880; g.gain.value = 0.08;
+    o.connect(g); g.connect(audio.destination);
+    o.start(); o.stop(audio.currentTime + 0.12);
+  } catch (_) {}
+}
+function leido() { unread = 0; document.title = 'MiniChat'; }
+window.addEventListener('focus', leido);
+
+// ---------- Ventana flotante ----------
+async function flotar() {
+  if (pipWin) { pipWin.close(); return; }
+  if (!('documentPictureInPicture' in window)) {
+    sistema('Tu navegador no permite ventana flotante. Usa Chrome o Edge de ordenador.');
+    return;
+  }
+  pipWin = await documentPictureInPicture.requestWindow({ width: 340, height: 480 });
+  pipWin.document.title = 'MiniChat';
+  pipWin.document.head.append(el.estilos.cloneNode(true));
+  pipWin.document.body.classList.add('pip');
+  pipWin.document.body.append(el.app);
+  pipWin.addEventListener('focus', leido);
+  el.aviso.style.display = 'block';
+  el.flotar.textContent = 'Volver';
+  el.msgs.scrollTop = el.msgs.scrollHeight;
+  pipWin.addEventListener('pagehide', () => {
+    document.body.append(el.app);
+    el.aviso.style.display = 'none';
+    el.flotar.textContent = 'Flotar';
+    pipWin = null;
+  });
+}
+
+// ---------- Eventos ----------
+el.entrar.onclick = entrar;
+el.frase.addEventListener('keydown', e => { if (e.key === 'Enter') entrar(); });
+el.enviar.onclick = enviar;
+el.txt.addEventListener('keydown', e => { if (e.key === 'Enter') enviar(); });
+el.flotar.onclick = flotar;
+el.salir.onclick = salir;
+window.addEventListener('beforeunload', () => { if (peer) peer.destroy(); });
+
+// Rellenar datos guardados (entrar sigue requiriendo un clic, para poder flotar y sonar)
+el.nick.value = localStorage.getItem('ca_nick') || '';
+el.frase.value = localStorage.getItem('ca_frase') || '';
+</script>
+</body>
+</html>
