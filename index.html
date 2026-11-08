@@ -4,33 +4,46 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MiniChat</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#15171c">
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style id="estilos">
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-body{font-family:system-ui,Segoe UI,sans-serif;background:#15171c;color:#e8e8e8}
+body{font-family:system-ui,Segoe UI,sans-serif;background:var(--bg,#15171c);color:var(--fg,#e8e8e8)}
 #app{display:flex;flex-direction:column;height:100vh;max-width:640px;margin:0 auto}
 .pip #app{max-width:none}
 #setup{margin:auto;padding:20px;display:flex;flex-direction:column;gap:10px;width:min(340px,90%)}
 #setup h1{margin:0 0 6px;font-size:20px;text-align:center}
-input,button{font:inherit;border-radius:8px;border:1px solid #3a3f4b;padding:9px 11px;background:#22252d;color:#eee}
-button{cursor:pointer;background:#2f6fde;border-color:#2f6fde}
-button.sec{background:#2a2e37;border-color:#3a3f4b}
-.nota{font-size:12px;color:#9aa}
+input,button{font:inherit;border-radius:8px;border:1px solid var(--borde);padding:9px 11px;background:var(--panel);color:var(--fg)}
+button{cursor:pointer;background:#2f6fde;border-color:#2f6fde;color:#fff}
+button.sec{background:var(--panel);border-color:var(--borde);color:var(--fg)}
+.nota{font-size:12px;color:var(--muted)}
 #chat{display:none;flex-direction:column;height:100%}
-#cab{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #2a2e37}
-#estado{flex:1;font-size:12px;color:#9ab;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cab{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--borde)}
+#estado{flex:1;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #cab button{padding:4px 9px;font-size:12px}
+#ajustes{display:none;flex-direction:column;gap:8px;padding:8px 10px;border-bottom:1px solid var(--borde);background:var(--panel);font-size:13px}
+#ajustes.abierto{display:flex}
+#ajustes label{display:flex;align-items:center;gap:8px}
+#ajustes input[type=range]{flex:1;padding:0}
+.fila{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.muestra{width:24px;height:24px;border-radius:50%;padding:0;border:2px solid transparent}
+.muestra.sel{border-color:var(--fg)}
+.tema{padding:4px 9px;font-size:12px;background:var(--bg);color:var(--fg);border-color:var(--borde)}
+.tema.sel{outline:2px solid #2f6fde}
 #msgs{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:5px}
-.m{max-width:85%;padding:6px 9px;border-radius:10px;background:#272b34;word-wrap:break-word;white-space:pre-wrap}
-.m.yo{align-self:flex-end;background:#2f5fb8}
-.m b{font-size:11px;color:#8fc1ff;display:block}
-.m.yo b{color:#cfe0ff}
-.m i{font-size:10px;color:#aab;font-style:normal;margin-left:6px}
-.sis{align-self:center;font-size:11px;color:#889}
-#pie{display:flex;gap:6px;padding:8px;border-top:1px solid #2a2e37}
-#txt{flex:1}
-#aviso{display:none;margin:auto;color:#9ab}
+.m{max-width:85%;padding:6px 9px;border-radius:10px;background:var(--otro);border-left:3px solid transparent;word-wrap:break-word;white-space:pre-wrap;font-size:var(--fs,15px)}
+.m.yo{align-self:flex-end;color:#fff;border-left:none}
+.m b{font-size:.75em;display:block}
+.m.yo b{color:#ffffffcc}
+.m i{font-size:.7em;opacity:.7;font-style:normal;margin-left:6px}
+.sis{align-self:center;font-size:11px;color:var(--muted)}
+#pie{display:flex;gap:6px;padding:8px;border-top:1px solid var(--borde)}
+#txt{flex:1;font-size:var(--fs,15px)}
+#aviso{display:none;margin:auto;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -46,8 +59,14 @@ button.sec{background:#2a2e37;border-color:#3a3f4b}
   <div id="chat">
     <div id="cab">
       <span id="estado">Conectando…</span>
+      <button id="ajustesBtn" class="sec" title="Ajustes">⚙</button>
       <button id="flotar" class="sec">Flotar</button>
       <button id="salir" class="sec">Salir</button>
+    </div>
+    <div id="ajustes">
+      <label>Letra <input type="range" id="fs" min="12" max="26" step="1"> <span id="fsVal"></span></label>
+      <div class="fila">Mi color <span id="colores" class="fila"></span></div>
+      <div class="fila">Tema <span id="temas" class="fila"></span></div>
     </div>
     <div id="msgs"></div>
     <div id="pie">
@@ -60,7 +79,7 @@ button.sec{background:#2a2e37;border-color:#3a3f4b}
 const MAX = 6;
 const $ = id => document.getElementById(id);
 const el = {};
-['app','setup','chat','nick','frase','entrar','nota','estado','flotar','salir','msgs','txt','enviar','aviso','estilos'].forEach(k => el[k] = $(k));
+['app','setup','chat','nick','frase','entrar','nota','estado','flotar','salir','msgs','txt','enviar','aviso','estilos','ajustesBtn','ajustes','fs','fsVal','colores','temas'].forEach(k => el[k] = $(k));
 
 let peer = null, mySlot = 0, base = '', authTok = '', nick = '', histKey = '', scan = null;
 let pipWin = null, unread = 0, audio = null;
@@ -145,7 +164,7 @@ function prepararConn(c, iniciador) {
   setTimeout(() => {
     if (!c.open) { c.close(); if (conns.get(r)?.conn === c) conns.delete(r); }
   }, 10000);
-  c.on('open', () => c.send({ t: 'hola', auth: authTok, nick }));
+  c.on('open', () => c.send({ t: 'hola', auth: authTok, nick, color: ajustes.color }));
   c.on('data', d => recibir(c, d));
   c.on('close', () => {
     const e = conns.get(r);
@@ -165,13 +184,14 @@ function recibir(c, d) {
     if (d.auth !== authTok) { c.close(); return; }   // no conoce la frase
     e.ok = true;
     e.nick = String(d.nick || '?').slice(0, 20);
+    e.color = colorValido(d.color);
     if (!anunciados.has(c.peer)) { anunciados.add(c.peer); sistema(e.nick + ' se ha conectado'); }
     actualizar();
     return;
   }
   if (!e.ok) return;
   if (d.t === 'msg') {
-    anadir({ from: e.nick, text: String(d.text || '').slice(0, 2000), ts: Date.now() }, true);
+    anadir({ from: e.nick, color: colorValido(d.color) || e.color, text: String(d.text || '').slice(0, 2000), ts: Date.now() }, true);
     avisar();
   }
 }
@@ -180,8 +200,8 @@ function enviar() {
   const t = el.txt.value.trim();
   if (!t) return;
   let n = 0;
-  for (const e of conns.values()) if (e.ok && e.conn.open) { e.conn.send({ t: 'msg', text: t }); n++; }
-  anadir({ from: nick, text: t, ts: Date.now(), yo: true }, true);
+  for (const e of conns.values()) if (e.ok && e.conn.open) { e.conn.send({ t: 'msg', text: t, color: ajustes.color }); n++; }
+  anadir({ from: nick, text: t, ts: Date.now(), yo: true, color: ajustes.color }, true);
   el.txt.value = '';
   if (!n) sistema('No hay nadie conectado: el mensaje no se ha entregado');
 }
@@ -200,6 +220,9 @@ function pintar(m) {
   d.className = 'm' + (m.yo ? ' yo' : '');
   const b = document.createElement('b');
   b.textContent = m.yo ? 'Tú' : m.from;
+  const col = colorValido(m.color) || '#2f6fde';
+  if (m.yo) d.style.background = col;
+  else { d.style.borderLeftColor = col; b.style.color = col; }
   const i = document.createElement('i');
   i.textContent = hora(m.ts);
   b.append(i);
@@ -258,6 +281,7 @@ async function flotar() {
   pipWin.document.title = 'MiniChat';
   pipWin.document.head.append(el.estilos.cloneNode(true));
   pipWin.document.body.classList.add('pip');
+  aplicarAjustes();
   pipWin.document.body.append(el.app);
   pipWin.addEventListener('focus', leido);
   el.aviso.style.display = 'block';
@@ -283,6 +307,66 @@ window.addEventListener('beforeunload', () => { if (peer) peer.destroy(); });
 // Rellenar datos guardados (entrar sigue requiriendo un clic, para poder flotar y sonar)
 el.nick.value = localStorage.getItem('ca_nick') || '';
 el.frase.value = localStorage.getItem('ca_frase') || '';
+
+// ---------- Ajustes: letra, color y tema ----------
+const COLORES = ['#2f6fde','#d64545','#2e9e5b','#e08a1e','#8e4fd6','#d14f9a','#1fa3a3','#6b7280'];
+const TEMAS = {
+  'Oscuro': { bg:'#15171c', fg:'#e8e8e8', panel:'#22252d', borde:'#3a3f4b', otro:'#272b34', muted:'#99a3ad' },
+  'Claro':  { bg:'#f4f5f7', fg:'#1d1f24', panel:'#ffffff', borde:'#cfd3da', otro:'#e4e7ec', muted:'#666e7a' },
+  'Noche':  { bg:'#0f1a2e', fg:'#e3ecff', panel:'#18263f', borde:'#2b3d5e', otro:'#1c2c48', muted:'#8ea3c4' },
+  'Verde':  { bg:'#1b261d', fg:'#e9f1e6', panel:'#243326', borde:'#3a4f3c', otro:'#2a3a2c', muted:'#9fb39f' }
+};
+function colorValido(c) { return /^#[0-9a-f]{6}$/i.test(c || '') ? c : null; }
+const ajustes = {
+  fs: +localStorage.getItem('ca_fs') || 15,
+  color: colorValido(localStorage.getItem('ca_color')) || COLORES[0],
+  tema: TEMAS[localStorage.getItem('ca_tema')] ? localStorage.getItem('ca_tema') : 'Oscuro'
+};
+function guardarAjustes() {
+  localStorage.setItem('ca_fs', ajustes.fs);
+  localStorage.setItem('ca_color', ajustes.color);
+  localStorage.setItem('ca_tema', ajustes.tema);
+}
+function aplicarAjustes() {
+  const t = TEMAS[ajustes.tema];
+  for (const doc of [document, pipWin && pipWin.document]) {
+    if (!doc) continue;
+    const st = doc.documentElement.style;
+    for (const k in t) st.setProperty('--' + k, t[k]);
+    st.setProperty('--fs', ajustes.fs + 'px');
+  }
+  el.fs.value = ajustes.fs;
+  el.fsVal.textContent = ajustes.fs + ' px';
+  el.colores.querySelectorAll('.muestra').forEach(b => b.classList.toggle('sel', b.dataset.c === ajustes.color));
+  el.temas.querySelectorAll('.tema').forEach(b => b.classList.toggle('sel', b.dataset.t === ajustes.tema));
+}
+function cambiar(k, v) {
+  ajustes[k] = v;
+  guardarAjustes();
+  aplicarAjustes();
+  if (k === 'color') {
+    // Repintar mis mensajes con el color nuevo
+    el.msgs.querySelectorAll('.m.yo').forEach(d => d.style.background = v);
+  }
+}
+COLORES.forEach(c => {
+  const b = document.createElement('button');
+  b.className = 'muestra'; b.dataset.c = c; b.style.background = c; b.title = c;
+  b.onclick = () => cambiar('color', c);
+  el.colores.append(b);
+});
+Object.keys(TEMAS).forEach(n => {
+  const b = document.createElement('button');
+  b.className = 'tema'; b.dataset.t = n; b.textContent = n;
+  const t = TEMAS[n]; b.style.background = t.bg; b.style.color = t.fg;
+  b.onclick = () => cambiar('tema', n);
+  el.temas.append(b);
+});
+el.fs.oninput = () => cambiar('fs', +el.fs.value);
+el.ajustesBtn.onclick = () => el.ajustes.classList.toggle('abierto');
+aplicarAjustes();
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 </script>
 </body>
 </html>
